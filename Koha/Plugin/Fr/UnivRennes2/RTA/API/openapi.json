@@ -1,0 +1,48 @@
+{
+    "/biblio/{biblionumber}": {
+        "get": {
+            "x-mojo-to": "Fr::UnivRennes2::RTA::API::ApiController#get_items",
+            "operationId": "get_items",
+            "tags": ["RTA API"],
+            "parameters": [{
+                "description": "Internal identifier for biblio record",
+                "in": "path",
+                "name": "biblionumber",
+                "required": true,
+                "type": "integer"
+            }],
+            "produces": [
+                "application/json"
+            ],
+            "responses": {
+                "200": {
+                    "description": "return items statuses by biblionumber"
+                },
+                "404": {
+                    "description": "An error occured",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "error": {
+                                "description": "An explanation for the error",
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "502": {
+                    "description": "An error occured",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "error": {
+                                "description": "An explanation for the error",
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
