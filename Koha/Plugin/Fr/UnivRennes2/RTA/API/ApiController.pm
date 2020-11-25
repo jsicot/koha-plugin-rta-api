@@ -23,6 +23,7 @@ use C4::Biblio;
 use C4::Items;
 use C4::CourseReserves qw(GetItemCourseReservesInfo);
 use C4::Reserves;
+use C4::Circulation qw(GetTransfers);
 use C4::Acquisition qw(GetOrdersByBiblionumber);
 use C4::Serials;    #uses getsubscriptionfrom biblionumber
 use Koha::AuthorisedValues;
@@ -59,6 +60,21 @@ sub get_items {
                 unless ($biblio) {
 			        return $c->render( status => 404, openapi => { error => "Object not found." } );
 			    }
+			    
+			#hold info
+	
+			my $hold_count;
+			my ($show_holds_count, $show_priority);
+			for ( C4::Context->preference("OPACShowHoldQueueDetails") ) {
+			    m/holds/o and $show_holds_count = 1;
+			    m/priority/ and $show_priority = 1;
+			}
+			if ( $show_holds_count || $show_priority) {
+			    my $holds = $biblio->holds;
+			    $hold_count  = $holds->count;
+			}   
+				    
+			    
 		    
 		    my $record = $biblio->metadata->record;
 
@@ -172,7 +188,7 @@ sub get_items {
 				@all_items = map { _item_to_api( $_ ) } @all_items;
 				
 				# return preparing items in json
-				my $json = _to_api(\@items,\@all_items);
+				my $json = _to_api(\@items,\@all_items,$hold_count);
 
 				return $c->render( status => 200, openapi =>  $json );
 				
@@ -192,10 +208,15 @@ sub _item_to_api {
 
 
     my $status = 'on_shelf';
-    $status = 'in_transfer' if $transfers;
     $status = 'on_demand' if ($ondemand > 0);
+    $status = 'in_transfer' if $transfers;
     $status = 'waiting_hold' if $waiting_holds;
     $status = 'checked_out' if $checkout;
+    
+    
+    
+
+    
     
     my $branch = Koha::Libraries->find( $item->{homebranch} );
     my $branchrank = $branch->branchnotes;
@@ -214,7 +235,7 @@ sub _item_to_api {
 		"itemtype" => $item->{description},
         "itemcallnumber" => $item->{itemcallnumber},
         "barcode" => $item->{barcode},
-        "onloan" => Koha::Template::Plugin::KohaDates->filter($item->{onloan}),
+        "due_date" => Koha::Template::Plugin::KohaDates->filter($item->{onloan}),
         "status" => $status,
         "itemnotes" => $item->{itemnotes},
         "copynumber" => $item->{copynumber},
@@ -228,28 +249,18 @@ sub _item_to_api {
         $item_obj->{'course_reserves'}  = GetItemCourseReservesInfo( itemnumber => $item->{itemnumber} );
     }
     
-        my $biblio = Koha::Biblios->find($item->{biblionumber});
+ 
 
-
-		my (%item_reserves, %priority);
-		my ($show_holds_count, $show_priority);
-		for ( C4::Context->preference("OPACShowHoldQueueDetails") ) {
-		    m/holds/o and $show_holds_count = 1;
-		    m/priority/ and $show_priority = 1;
-		}
-		my $has_hold;
-		if ( $show_holds_count || $show_priority) {
-		    my $holds = $biblio->holds;
-		    $item_obj->{'hold_count'}  = $holds->count;
-		    while ( my $hold = $holds->next ) {
-		        $item_reserves{ $hold->itemnumber }++ if $hold->itemnumber;
-		        if ($show_priority ) {
-		            $has_hold = 1;
-		            $item_obj->{'hold_priority'}  = $hold->priority
-		        }
-		    }
-		}
-
+     my $reserve_status = C4::Reserves::GetReserveStatus($item->{itemnumber});
+     if( $reserve_status eq "Waiting"){ $item_obj->{'waiting'} = 1; }
+     if( $reserve_status eq "Reserved"){ $item_obj->{'onhold'} = 1; }
+    
+     my ( $transfertwhen, $transfertfrom, $transfertto ) = GetTransfers($item->{itemnumber});
+     if ( defined( $transfertwhen ) && $transfertwhen ne '' ) {
+        $item_obj->{transfertwhen} = Koha::Template::Plugin::KohaDates->filter($transfertwhen);
+        $item_obj->{transfertfrom} = $transfertfrom;
+        $item_obj->{transfertto}   = $transfertto;
+     }
     
     
     return $item_obj;
@@ -299,25 +310,31 @@ sub _serial_to_api {
 	my @serialcollections = @{$_[0]};
 	my @subscriptions = @{$_[1]};
 	
-    my $status = 'is_serial';
-	
-    my $item_obj = {
-        "status" => $status
+	my $obj = {};
+	my @items;
+    my $status = {
+        "status" => 'is_serial'
     };
     
-    $item_obj->{'serial_collections'}  = \@serialcollections;
-    $item_obj->{'subscription'}  = \@subscriptions;
-
-    return $item_obj;
+    push @items, $status;
+    
+    $obj->{'serial_collections'}  = \@serialcollections;
+    $obj->{'subscription'}  = \@subscriptions;
+	$obj->{'items'}  = \@items;
+	
+	
+    return $obj;
 }
 
 sub _to_api {
     
 	my @raw_items = @{$_[0]};
 	my @map_items = @{$_[1]};
+	my $hold_count = $_[2];
 	
     my $item_obj = {};
 #     $item_obj->{'@raw_items'}  = \@raw_items;
+	 $item_obj->{'hold_count'}  = $hold_count;
      $item_obj->{'items'}  = \@map_items;
 
     return $item_obj;
