@@ -20,7 +20,9 @@ use Modern::Perl;
 use CGI;
 use C4::Context;
 use C4::Biblio;
+use C4::Items;
 use C4::CourseReserves qw(GetItemCourseReservesInfo);
+use C4::Reserves;
 use C4::Acquisition qw(GetOrdersByBiblionumber);
 use C4::Serials;    #uses getsubscriptionfrom biblionumber
 use Koha::AuthorisedValues;
@@ -29,6 +31,7 @@ use Koha::Library;
 use Koha::Plugin::Fr::UnivRennes2::RTA;
 use Koha::DateUtils;
 use Koha::Template::Plugin::KohaDates;
+use List::MoreUtils qw/any none/;
 use Mojo::Base 'Mojolicious::Controller';
 
 
@@ -56,9 +59,6 @@ sub get_items {
                 unless ($biblio) {
 			        return $c->render( status => 404, openapi => { error => "Object not found." } );
 			    }
-			my $criterias = {
-		        biblionumber => $biblionumber,
-		    };
 		    
 		    my $record = $biblio->metadata->record;
 
@@ -67,9 +67,7 @@ sub get_items {
 				#coping with subscriptions
 				my $subscriptionsnumber = CountSubscriptionFromBiblionumber($biblionumber);
 				my @subscriptions       = SearchSubscriptions({ biblionumber => $biblionumber, orderby => 'title' });
-				
 				@subscriptions = map { _sub_to_api( $_ ) } @subscriptions;
-				
 				
 			    # Serial Collection
 				my @sc_fields = $record->field(955);
@@ -84,7 +82,7 @@ sub get_items {
 				foreach my $sc_field (@sc_fields) {
 				    my %row_data;
 				
-				    $row_data{text}    = $sc_field->subfield('r');
+				    $row_data{collection}    = $sc_field->subfield('r');
  				    my $rcr  = substr($sc_field->subfield('5'), 0, 9);
  				     my $branchcode = $rcr
 				      ? Koha::AuthorisedValues->find(
@@ -121,16 +119,13 @@ sub get_items {
 				    }
 				}
 				
-# 				if (scalar(@serialcollections) > 0) {
+				# Return serials info in json
 				my $serials = _serial_to_api(\@serialcollections,\@subscriptions);
 				return $c->render( status => 200, openapi =>  $serials );
    
 			} else {
 				
-				my @items = Koha::Items->search($criterias);
-			    
-			    
-			    @items = map { _item_to_api( $_ ) } @items;
+				my @items = GetItemsInfo($biblionumber);
 			    
 			    unless (@items) {
 				    
@@ -146,22 +141,54 @@ sub get_items {
 			    	   return $c->render( status => 200, openapi =>  \@orders );
 				}
 				
-				return $c->render( status => 200, openapi =>  \@items );
+				my @hiddenitems;
+				if ( scalar @items >= 1 ) {
+				    push @hiddenitems,
+				      GetHiddenItemnumbers( { items => \@items } );
+				
+				    if (scalar @hiddenitems == scalar @items ) {
+				        return $c->render( status => 404, openapi => { error => "Object not found." } );
+				    }
+				}
+				# Are there items to hide?
+				my $hideitems;
+				$hideitems = 1 if C4::Context->preference('hidelostitems') or scalar(@hiddenitems) > 0;
+				
+				my @all_items;
+				# Hide items
+				if ($hideitems) {
+				    for my $itm (@items) {
+					if  ( C4::Context->preference('hidelostitems') ) {
+					    push @all_items, $itm unless $itm->{itemlost} or any { $itm->{'itemnumber'} eq $_ } @hiddenitems;
+					} else {
+					    push @all_items, $itm unless any { $itm->{'itemnumber'} eq $_ } @hiddenitems;
+				    }
+				}
+				} else {
+				    # Or not
+				    
+				    @all_items = @items;
+				}
+				@all_items = map { _item_to_api( $_ ) } @all_items;
+				
+				# return preparing items in json
+				my $json = _to_api(\@items,\@all_items);
+
+				return $c->render( status => 200, openapi =>  $json );
 				
 			}
-
    		}
    }
 
 sub _item_to_api {
     my ($item) = @_;
-
-    my $checkout = Koha::Checkouts->find({ itemnumber => $item->itemnumber });
-    my $waiting_holds = Koha::Holds->count({ itemnumber => $item->itemnumber, found => { in => [ "W", "T" ] } } );
-    my $transfers = Koha::Item::Transfers->count({ itemnumber => $item->itemnumber, datearrived => undef });
+    
+    my $checkout = Koha::Checkouts->find({ itemnumber => $item->{itemnumber} });
+    my $waiting_holds = Koha::Holds->count({ itemnumber => $item->{itemnumber}, found => { in => [ "W", "T" ] } } );
+    my $transfers = Koha::Item::Transfers->count({ itemnumber => $item->{itemnumber}, datearrived => undef });
     
     my $wrm =Koha::Plugin::Fr::UnivRennes2::WRM->new();;
-    my $ondemand = $wrm->item_is_requestable( $item->itemnumber, $item->biblionumber );
+    my $ondemand = $wrm->item_is_requestable( $item->{itemnumber}, $item->{biblionumber} );
 
 
     my $status = 'on_shelf';
@@ -170,31 +197,59 @@ sub _item_to_api {
     $status = 'waiting_hold' if $waiting_holds;
     $status = 'checked_out' if $checkout;
     
-    my $branch = Koha::Libraries->find( $item->homebranch );
+    my $branch = Koha::Libraries->find( $item->{homebranch} );
     my $branchrank = $branch->branchnotes;
     
     my $item_obj = {
-	    "itemnumber" => $item->itemnumber,
-	    "itemlost" => $item->damaged,
-	    "withdrawn" => $item->withdrawn,
-	    "damaged" => $item->damaged,
-	    "homebranch" => $item->home_branch->branchname,
-	    "branchcode" => $item->homebranch,
-        "holdingbranch" => $item->holding_branch->branchname,
-        "location" => Koha::AuthorisedValues->find_by_koha_field( { kohafield => 'items.location', authorised_value => $item->location } )->lib,
-        "itemtype" => Koha::ItemTypes->find( $item->effective_itemtype )->description,
-        "itemcallnumber" => $item->itemcallnumber,
-        "barcode" => $item->barcode,
-        "onloan" => Koha::Template::Plugin::KohaDates->filter($item->onloan),
+	    "itemnumber" => $item->{itemnumber},
+	    "itemlost" => $item->{itemlost},
+	    "withdrawn" => $item->{withdrawn},
+	    "damaged" => $item->{damaged},
+	    "branchname" => $item->{branchname},
+#	    "holdingbranch" => $item->holding_branch->branchname,
+	    "homebranch" => $item->{homebranch},
+        "holdingbranch" => $item->{holdingbranch},
+        "location" => Koha::AuthorisedValues->find_by_koha_field( { kohafield => 'items.location', authorised_value => $item->{location} } )->lib,
+#       "itemtype" => Koha::ItemTypes->find( $item->{itype} )->description,
+		"itemtype" => $item->{description},
+        "itemcallnumber" => $item->{itemcallnumber},
+        "barcode" => $item->{barcode},
+        "onloan" => Koha::Template::Plugin::KohaDates->filter($item->{onloan}),
         "status" => $status,
-        "itemnotes" => $item->itemnotes,
-        "copynumber" => $item->copynumber,
-        "branchrank" => $branchrank
+        "itemnotes" => $item->{itemnotes},
+        "copynumber" => $item->{copynumber},
+        "branchrank" => $branchrank,
+        "itemnotforloan" => $item->{itemnotforloan},
+        "notforloan" => $item->{notforloanvalueopac},
+        "materials" => $item->{materials}
     };
     
     if ( C4::Context->preference('UseCourseReserves') ) {
-        $item_obj->{'course_reserves'}  = GetItemCourseReservesInfo( itemnumber => $item->itemnumber );
+        $item_obj->{'course_reserves'}  = GetItemCourseReservesInfo( itemnumber => $item->{itemnumber} );
     }
+    
+        my $biblio = Koha::Biblios->find($item->{biblionumber});
+
+
+		my (%item_reserves, %priority);
+		my ($show_holds_count, $show_priority);
+		for ( C4::Context->preference("OPACShowHoldQueueDetails") ) {
+		    m/holds/o and $show_holds_count = 1;
+		    m/priority/ and $show_priority = 1;
+		}
+		my $has_hold;
+		if ( $show_holds_count || $show_priority) {
+		    my $holds = $biblio->holds;
+		    $item_obj->{'hold_count'}  = $holds->count;
+		    while ( my $hold = $holds->next ) {
+		        $item_reserves{ $hold->itemnumber }++ if $hold->itemnumber;
+		        if ($show_priority ) {
+		            $has_hold = 1;
+		            $item_obj->{'hold_priority'}  = $hold->priority
+		        }
+		    }
+		}
+
     
     
     return $item_obj;
@@ -236,7 +291,6 @@ sub _sub_to_api {
     
     $item_obj->{'latestserials'}  = GetLatestSerials( $subscription->{subscriptionid}, $serials_to_display );
 
-    
     return $item_obj;
 }
 
@@ -252,9 +306,20 @@ sub _serial_to_api {
     };
     
     $item_obj->{'serial_collections'}  = \@serialcollections;
-     $item_obj->{'subscription'}  = \@subscriptions;
+    $item_obj->{'subscription'}  = \@subscriptions;
 
+    return $item_obj;
+}
+
+sub _to_api {
     
+	my @raw_items = @{$_[0]};
+	my @map_items = @{$_[1]};
+	
+    my $item_obj = {};
+#     $item_obj->{'@raw_items'}  = \@raw_items;
+     $item_obj->{'items'}  = \@map_items;
+
     return $item_obj;
 }
 
