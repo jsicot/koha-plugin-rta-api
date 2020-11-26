@@ -74,11 +74,9 @@ sub get_items {
 			    $hold_count  = $holds->count;
 			}   
 				    
-			    
-		    
 		    my $record = $biblio->metadata->record;
 
-		    if( $record->field('099')->subfield('t') eq 'REVUE' ) {
+		    if( $record->field('099') && $record->field('099')->subfield('t') eq 'REVUE' ) {
 			
 				#coping with subscriptions
 				my $subscriptionsnumber = CountSubscriptionFromBiblionumber($biblionumber);
@@ -154,7 +152,23 @@ sub get_items {
 				        }
 				    );    # GetHistory sorted by aqbooksellerid, but does it make sense?
 					   @orders = map { _order_to_api( $_ ) } @orders;
-			    	   return $c->render( status => 200, openapi =>  \@orders );
+					   
+					if (scalar @orders > 0) {
+						my @it;
+					    my $status = {
+					        "status" => "ordered"
+					    };
+					    
+					    push @it, $status;
+					    
+					    my $item_obj = {};
+						$item_obj->{'orders'}  = \@orders;
+					    $item_obj->{'items'}  = \@it;
+
+					   
+			    	   return $c->render( status => 200, openapi => $item_obj );
+					}  
+
 				}
 				
 				my @hiddenitems;
@@ -213,11 +227,6 @@ sub _item_to_api {
     $status = 'waiting_hold' if $waiting_holds;
     $status = 'checked_out' if $checkout;
     
-    
-    
-
-    
-    
     my $branch = Koha::Libraries->find( $item->{homebranch} );
     my $branchrank = $branch->branchnotes;
     
@@ -268,17 +277,19 @@ sub _item_to_api {
 
 sub _order_to_api {
     my ($order) = @_;
+	my $obj ;
+	if ($order->datereceived eq "") {
+		$obj = {
+		    "order_date" => Koha::Template::Plugin::KohaDates->filter($order->entrydate),
+		    "order_datereceived" => Koha::Template::Plugin::KohaDates->filter($order->datereceived),
+			"order_status" => $order->orderstatus,
+			"order_quantity" => $order->quantity,
+			"order_quantityreceived" => $order->quantityreceived
+		};
+	}
 
-    my $status = 'ordered' if ($order->datereceived eq "");
-    my $item_obj = {
-        "status" => $status,
-        "order_date" => Koha::Template::Plugin::KohaDates->filter($order->entrydate),
-		"order_status" => $order->orderstatus,
-		"order_quantity" => $order->quantity,
-		"order_quantityreceived" => $order->quantityreceived
-    };
     
-    return $item_obj;
+    return $obj;
 }
 
 sub _sub_to_api {
@@ -300,8 +311,12 @@ sub _sub_to_api {
 		"staffdisplaycount" => $serials_to_display,
     };
     
-    $item_obj->{'latestserials'}  = GetLatestSerials( $subscription->{subscriptionid}, $serials_to_display );
-
+    my $latestserials = GetLatestSerials( $subscription->{subscriptionid}, $serials_to_display );
+    my @latestserials = @{$latestserials};
+    @latestserials = map { _latestserials_to_api( $_ ) } @latestserials;
+	$item_obj->{"latestserials "} = \@latestserials;
+	
+	
     return $item_obj;
 }
 
@@ -322,6 +337,21 @@ sub _serial_to_api {
     $obj->{'subscription'}  = \@subscriptions;
 	$obj->{'items'}  = \@items;
 	
+	
+    return $obj;
+}
+
+sub _latestserials_to_api {
+    
+    my ($ls) = @_;
+	
+    my $obj = {
+        "notes" => $ls->{notes},
+		"planneddate" => Koha::Template::Plugin::KohaDates->filter($ls->{planneddate}),
+		"publisheddate" => Koha::Template::Plugin::KohaDates->filter($ls->{publisheddate}),
+		"serialseq" => $ls->{serialseq},
+		"status" => "arrivé"
+    };
 	
     return $obj;
 }
