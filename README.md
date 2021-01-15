@@ -1,8 +1,18 @@
 # Demandes magasin
 ## Description
-Permet de gérer les demandes de document en magasin.
+Permet de créer un nouvelle route au niveau de l'API REST de koha pour exposer la disponibilité des exemplaires en temps réel. Utile pour un interfaçage avec un outil de découverte.
+Ce plugin est prévu pour un environnement marc.
+(Pour les périodiques, ces sont les états de collection, les abonnements et derniers numéros reçus qui sont exposée).
+
+## Exemple de requête
+
+Method:	
+GET
+URL: api/v1/contrib/rata/biblio/{biblionumber}
+
+
 ## Déploiement
-Pour déploier le plugin, executez le script `build.sh`
+Pour déployer le plugin, executez le script `build.sh`
 ```
 user$ bash build.sh
 ```
