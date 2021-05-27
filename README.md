@@ -7,7 +7,7 @@ Ce plugin est prévu pour un environnement marc.
 
 Method:	
 GET
-URL: api/v1/contrib/rata/biblio/{biblionumber}
+URL: api/v1/contrib/rta/biblio/{biblionumber}
 
 
 ## Déploiement
