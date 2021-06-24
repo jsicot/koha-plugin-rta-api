@@ -1,6 +1,6 @@
 ## Description
 Permet de créer un nouvelle route au niveau de l'API REST de koha pour exposer la disponibilité des exemplaires en temps réel. Utile pour un interfaçage avec un outil de découverte.
-Ce plugin est prévu pour un environnement marc.
+Ce plugin est prévu pour un environnement unimarc.
 (Pour les périodiques, ces sont les états de collection, les abonnements et derniers numéros reçus qui sont exposée).
 
 ## Exemple de requête
